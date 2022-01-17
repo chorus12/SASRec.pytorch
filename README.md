@@ -1,21 +1,18 @@
-update, with few lines of manually initialization code added, it converges as fast as tf version. BTW, I strongly recommend checking issues of the repo from time to time for knowing new updates and details :)
+Implementation of SASRec model via pytorch/lightning. 
+Originally based on [this code](https://github.com/pmixer/SASRec.pytorch) but rewritten completely. Original files preserved (`main.py`, `model.py`, `utils.py`)
+[Implementation by authors of paper](https://github.com/kang205/SASRec)
 
----
 
-update: a pretrained model added, pls run the command as below to test its performance(current perf still not as good as paper's reported results after trained more epochs, maybe due to leaky causual attention weights issue got fixed by using PyTorch 1.6's MultiHeadAttention, pls help identifying the root cause if you are interested):
-
+Code for running multiple GPU training:
 ```
-python main.py --device=cuda --dataset=ml-1m --train_dir=default --state_dict_path='ml-1m_default/SASRec.epoch=601.lr=0.001.layer=2.head=1.hidden=50.maxlen=200.pth' --inference_only=true --maxlen=200
-
+PL_TORCH_DISTRIBUTED_BACKEND=nccl python SASRemMain.py --dataset=ml-1m --train_dir=default --maxlen=200 --dropout_rate=0.2 --device=cuda
 ```
+Don't forget to run tensorboard as well
+```
+tensorboard --logdir ./lightning_logs/ --host 0.0.0.0
+```
+To run interactive version use [notebook](./SASRec.pytorch/SASRec_refactored.ipynb) 
 
----
-
-modified based on [paper author's tensorflow implementation](https://github.com/kang205/SASRec), switching to PyTorch(v1.6) for simplicity, executable by:
-
-```python main.py --dataset=ml-1m --train_dir=default --maxlen=200 --dropout_rate=0.2 --device=cuda```
-
-pls check paper author's [repo](https://github.com/kang205/SASRec) for detailed intro and more complete README, and here's paper bib FYI :)
 
 ```
 @inproceedings{kang2018self,

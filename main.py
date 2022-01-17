@@ -2,6 +2,8 @@ import os
 import time
 import torch
 import argparse
+import pytorch_lightning as pl
+from torch.utils.tensorboard import SummaryWriter
 
 from model import SASRec
 from utils import *
@@ -26,6 +28,8 @@ parser.add_argument('--l2_emb', default=0.0, type=float)
 parser.add_argument('--device', default='cpu', type=str)
 parser.add_argument('--inference_only', default=False, type=str2bool)
 parser.add_argument('--state_dict_path', default=None, type=str)
+parser.add_argument('--comment', default="whatever", type=str)
+
 
 args = parser.parse_args()
 if not os.path.isdir(args.dataset + '_' + args.train_dir):
@@ -37,6 +41,8 @@ f.close()
 if __name__ == '__main__':
     # global dataset
     dataset = data_partition(args.dataset)
+    
+    writer = SummaryWriter(log_dir=os.path.join(os.path.abspath(os.path.curdir), 'runs'), comment=args.comment, flush_secs=30)
 
     [user_train, user_valid, user_test, usernum, itemnum] = dataset
     num_batch = len(user_train) // args.batch_size # tail? + ((len(user_train) % args.batch_size) != 0)
@@ -45,7 +51,6 @@ if __name__ == '__main__':
         cc += len(user_train[u])
     print('average sequence length: %.2f' % (cc / len(user_train)))
     
-    f = open(os.path.join(args.dataset + '_' + args.train_dir, 'log.txt'), 'w')
     
     sampler = WarpSampler(user_train, usernum, itemnum, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=3)
     model = SASRec(usernum, itemnum, args).to(args.device) # no ReLU activation in original SASRec implementation?
@@ -88,7 +93,7 @@ if __name__ == '__main__':
     t0 = time.time()
     
     for epoch in range(epoch_start_idx, args.num_epochs + 1):
-        if args.inference_only: break # just to decrease identition
+        # if args.inference_only: break # just to decrease identition
         for step in range(num_batch): # tqdm(range(num_batch), total=num_batch, ncols=70, leave=False, unit='b'):
             u, seq, pos, neg = sampler.next_batch() # tuples to ndarray
             u, seq, pos, neg = np.array(u), np.array(seq), np.array(pos), np.array(neg)
@@ -102,21 +107,21 @@ if __name__ == '__main__':
             for param in model.item_emb.parameters(): loss += args.l2_emb * torch.norm(param)
             loss.backward()
             adam_optimizer.step()
+            writer.add_scalars(main_tag=args.comment, tag_scalar_dict={'Loss/train': loss.item()}, global_step=epoch*num_batch + step)
+    # writer.flush()
+    # writer.close()
             print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item())) # expected 0.4~0.6 after init few epochs
     
-        if epoch % 20 == 0:
+        if epoch % 5 == 0:
             model.eval()
             t1 = time.time() - t0
             T += t1
             print('Evaluating', end='')
             t_test = evaluate(model, dataset, args)
             t_valid = evaluate_valid(model, dataset, args)
-            print('epoch:%d, time: %f(s), valid (NDCG@10: %.4f, HR@10: %.4f), test (NDCG@10: %.4f, HR@10: %.4f)'
-                    % (epoch, T, t_valid[0], t_valid[1], t_test[0], t_test[1]))
-    
-            f.write(str(t_valid) + ' ' + str(t_test) + '\n')
-            f.flush()
-            t0 = time.time()
+            writer.add_scalars(main_tag=args.comment, 
+                               tag_scalar_dict={'NDCG@10/train': t_valid[0], 'HR@10/train':t_valid[1], 'NDCG@10/test': t_test[0], 'HR@10/test':t_test[1]}, 
+                               global_step=epoch*num_batch + step)    
             model.train()
     
         if epoch == args.num_epochs:
@@ -125,6 +130,5 @@ if __name__ == '__main__':
             fname = fname.format(args.num_epochs, args.lr, args.num_blocks, args.num_heads, args.hidden_units, args.maxlen)
             torch.save(model.state_dict(), os.path.join(folder, fname))
     
-    f.close()
     sampler.close()
     print("Done")

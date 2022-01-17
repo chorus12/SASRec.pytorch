@@ -74,6 +74,22 @@ class WarpSampler(object):
 
 # train/val/test data generation
 def data_partition(fname):
+    '''
+    Partition the data into train, valid and test sets. 
+    Input :  file in format 
+    user_id<space>item_selected
+    ...
+    user_id<space>item_selected
+    All items appear according to time order
+    Returns:
+    user_train - dict with key = userid and value = list of all items selected in respected time order
+    user_valid - dict with the same structure as above but with penulitimate item (just one item)
+    user_test - same as above but with ultimate item selected
+    i.e. you have user 5 with items 1,29,34,15,8 there will be 
+    user_train[5] = [1,29,34], user_valid = [15], user_test=[8]
+    usernum - number of users
+    itemnum - number of items
+    '''
     usernum = 0
     itemnum = 0
     User = defaultdict(list)
