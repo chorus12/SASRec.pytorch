@@ -11,7 +11,7 @@ Don't forget to run tensorboard as well
 ```
 tensorboard --logdir ./lightning_logs/ --host 0.0.0.0
 ```
-To run interactive version use [notebook](./SASRec.pytorch/SASRec_refactored.ipynb) 
+To run interactive version use [notebook](./SASRec_refactored.ipynb) 
 
 
 ```
