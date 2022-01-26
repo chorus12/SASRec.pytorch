@@ -1,5 +1,6 @@
 Implementation of SASRec model via pytorch/lightning. 
-Originally based on [this code](https://github.com/pmixer/SASRec.pytorch) but rewritten completely.  
+Originally based on [this code](https://github.com/pmixer/SASRec.pytorch) but rewritten completely to achieve same values for metrics as in paper. 
+![NDCG@10 on Movie Lens 1M](./ndcg.png)
 [Implementation by authors of paper](https://github.com/kang205/SASRec)
 
 
