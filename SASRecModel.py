@@ -71,16 +71,20 @@ class SASRecEncoderLayer(pl.LightningModule):
         #               ...
         # [False, False,... False,  True],
         # [False, False,... False, False]]
-        self.attn_mask = torch.ones((self.seq_len, self.seq_len), dtype=torch.bool)
-        self.attn_mask = torch.triu(self.attn_mask, diagonal=1)
+        # self.attn_mask = torch.ones((self.seq_len, self.seq_len), dtype=torch.bool)
+        # self.attn_mask = torch.triu(self.attn_mask, diagonal=1)
+        self.register_buffer("attn_mask", torch.triu(torch.ones((self.seq_len, self.seq_len), 
+                                                                dtype=torch.bool), 
+                                                     diagonal=1))
     def forward(self, x):
-        # x_2 = self.norm_1(x) # norming before sending inside attention
-        x_2, _ = self.attn.forward(query=self.norm_1(x), 
-                                   key=x, 
-                                   value=x, 
+        x_2 = self.norm_1(x) # norming before sending inside attention
+        # x_2, _ = self.attn.forward(query=self.norm_1(x), 
+        x_2, _ = self.attn.forward(query=x_2, 
+                                   key=x_2, 
+                                   value=x_2, 
                                    key_padding_mask=None, 
                                    need_weights=False, 
-                                   attn_mask=self.attn_mask.to(self.device)) # get multihead attention, second element in a return tuple is attention weights 
+                                   attn_mask=self.attn_mask) # get multihead attention, second element in a return tuple is attention weights 
         x = x + x_2 # skip connection operation, dropout was inside attention block
 
         x_2 = self.norm_2(x) # norm before sending to FF
@@ -95,17 +99,13 @@ class PositinalEncoder(pl.LightningModule):
         super(PositinalEncoder, self).__init__()
         self.seq_len = seq_len
         self.d_model = d_model
-        self.pe = Embedding(num_embeddings=seq_len, embedding_dim=d_model)
+        self.pe = Embedding(num_embeddings=self.seq_len, embedding_dim=self.d_model)
     def forward(self, x):
-        # !!! potentially there is a problem inside this block for a short seqs - empty positions will get values here as well
         batch_size = x.shape[0]
-        positions = torch.tile(torch.arange(0,self.seq_len, dtype=torch.int), 
-                               (batch_size,1)).to(self.device)
-        # get a matrix like this
-        # [[0, 1, 2, 3 ... seq_len-1],
-        #    ... (batch_size times)
-        # [0, 1, 2, 3 ... seq_len-1]]
-        return self.pe(positions)
+        pe_for_one_sequence = self.pe(torch.arange(0,x.shape[1], dtype=torch.int).to(self.device)) # get a single positional embedding
+        # positions = torch.tile(pe_for_one_sequence, (batch_size,1,1)).to(self.device) # replicate for batch # nice but is not supported by onnx
+        positions = torch.cat(tuple(pe_for_one_sequence.unsqueeze(dim=0) for i in range(batch_size)), dim=0)
+        return positions
     
     
 class SASRecEncoder(pl.LightningModule):
@@ -119,21 +119,24 @@ class SASRecEncoder(pl.LightningModule):
         #return torch.nn.ModuleList([deepcopy(module) for i in range(N)])
         return torch.nn.Sequential(*[deepcopy(module) for i in range(N)])
     
-    def __init__(self, item_num, warmup_proportion=0.2, max_iters=10000, opt='AdamW', **kwargs):
+    def __init__(self, item_num, **kwargs):
         '''
-        counstructor
+        - item_num - number of items in total for all data
+        - warmup_proportion - in case lr-scheduler is used - pct of total iterations to warm-up linearly the lr
+        - max_iters - in case lr-scheduler is used - max iters to zero lr
+        - opt - optimizer to use
+        - weight_decay - parameter for weight-decay
+        - lr
+        - d_model
+        - num_blocks 
+        - num_heads 
+        - dropout_rate 
+        - maxlen - max seq len
+        - item_num - vocab size 
+        - top_k - top_k for ndcg and hit rate calculation
         '''
         super().__init__()
-        self.save_hyperparameters("warmup_proportion", # in case lr-scheduler is used - pct of total iterations to warm-up linearly the lr
-                                  "max_iters", # in case lr-scheduler is used - max iters to zero lr
-                                  "opt", # optimizer to use
-                                  "d_model", 
-                                  "num_blocks", 
-                                  "num_heads", 
-                                  "dropout_rate", 
-                                  "lr", 
-                                  "maxlen", # max seq len
-                                  "item_num") # vocab size
+        self.save_hyperparameters()
         
         self.ie = Embedding(num_embeddings=self.hparams.item_num+1, embedding_dim=self.hparams.d_model, padding_idx=0) # +1 in num_embeddings for padding id=0
         self.pe = PositinalEncoder(seq_len=self.hparams.maxlen, d_model=self.hparams.d_model)
@@ -147,10 +150,13 @@ class SASRecEncoder(pl.LightningModule):
         x.dim = batch_size, seq_len
         out.dim - batch_size, seq_len, d_model
         """
+        
+        padding_mask = (x!=0).to(self.device) # True on real item positions and False on padding
+        
         # produce embeddings from items
-        x_emb  = self.ie(x)*(self.hparams.d_model**0.5) # this if from Attention is all you need paper
-        x_emb = x_emb + self.pe(x) # add positional encoding
-        x_emb = self.emb_dropout(x_emb) # apply dropout to the embedding
+        d_model_sqrt = self.hparams.d_model**0.5 # from Attention is all you need paper
+        x_emb = self.emb_dropout( self.ie(x)*d_model_sqrt + self.pe(x)) # add positional encoding and apply dropout to the embedding -> produce E-hat
+        x_emb = x_emb*padding_mask.unsqueeze(-1)
         out = self.final_norm(self.enc_stack(x_emb)) # run through the stack of Encoder num_blocks
         
         return out
@@ -186,10 +192,10 @@ class SASRecEncoder(pl.LightningModule):
         
         # loss for positive and negative sequence
         loss = self.loss(pos_scores[indices], pos_labels[indices]) +\
-        self.loss(neg_scores[indices], neg_labels[indices]) 
+        self.loss(neg_scores[indices], neg_labels[indices]) \
+        + self.hparams.l2_pe_reg*torch.linalg.matrix_norm(next(self.pe.parameters()).data)
+        # + self.hparams.l2_pe_reg*torch.linalg.matrix_norm(next(self.ie.parameters()).data) # regularization for item and positional embedding
         
-        # some legacy regularization
-        # for param in self.item_emb.parameters(): loss += self.hparams.l2_emb * torch.norm(param) 
 
         self.log('loss', loss.item(), prog_bar=True, logger=True)
         # self.log('lr', self.lr_scheduler.get_last_lr()[0],  prog_bar=True, logger=True)
@@ -218,24 +224,44 @@ class SASRecEncoder(pl.LightningModule):
         return logits # preds (batch, len(tems2score))
         
     def configure_optimizers(self):
-        param_optimizer = list(self.named_parameters())
-        no_decay = ['bias', 'gamma', 'beta', 'LayerNorm']
+        # param_optimizer = list(self.named_parameters())
+        # no_decay = ['bias', 'gamma', 'beta', 'LayerNorm']
 
-        optimizer_grouped_parameters = [
-            {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 
-             'weight_decay': 0.01},
-            {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 
-             'weight_decay': 0.0}]
+#         optimizer_grouped_parameters = [
+#             {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 
+#              'weight_decay': 0.01},
+#             {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 
+#              'weight_decay': 0.0}]
 
-        if self.hparams.opt == 'AdamW':
-            optimizer = optim.AdamW(optimizer_grouped_parameters, lr=self.hparams.lr, betas=(0.9, 0.98))
+#         if self.hparams.opt == 'AdamW':
+#             optimizer = torch.optim.AdamW(optimizer_grouped_parameters, 
+#                                           lr=self.hparams.lr, 
+#                                           weight_decay=self.hparams.weight_decay, 
+#                                           betas=(0.9, 0.98))
+        # select optimizer function
+        if self.hparams.opt == 'FusedAdam':
+            try:
+                from apex.optimizers import FusedAdam
+                selected_optimizer = FusedAdam
+            except ModuleNotFoundError:
+                print("\n No apex installed - switching to simple Adam\n")
+                selected_optimizer = torch.optim.Adam
         elif self.hparams.opt == 'Adam':
-            optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, betas=(0.9, 0.98))
+            selected_optimizer = torch.optim.Adam
+        elif self.hparams.opt == 'AdamW':
+            selected_optimizer = torch.optim.AdamW
+
+        # setup optimizer        
+        opt = selected_optimizer(self.parameters(), 
+                                       lr=self.hparams.lr, 
+                                       weight_decay=self.hparams.weight_decay, 
+                                       betas=(0.9, 0.98))
+
 
         # self.lr_scheduler = PolyWarmUpScheduler(optimizer,
         #                                         warmup=self.hparams.warmup_proportion,
         #                                         total_steps=self.hparams.max_iters)
-        return optimizer
+        return opt
     
     # def optimizer_step(self, *args, **kwargs):
     #     super().optimizer_step(*args, **kwargs)
@@ -265,7 +291,7 @@ class SASRecEncoder(pl.LightningModule):
             # in element with index 0 we have a logit for the ground truth item
             GROUND_TRUTH_IDX = 0
 
-            TOP_N = 10 # number of items that we look for a proper recommendation in
+            TOP_N = self.hparams.top_k # number of items that we look for a proper recommendation in
             _, indices = torch.topk(predictions, TOP_N, dim=1, largest=False)
             _, rank = torch.where(indices == GROUND_TRUTH_IDX) # now we have ranks of ground truth elements
             HITS = torch.as_tensor(rank <= TOP_N , dtype=torch.int) # 0 for miss and 1 for hit
@@ -277,13 +303,13 @@ class SASRecEncoder(pl.LightningModule):
         calculate Hit Rate and NDCG on validation dataset
         """
         hits, ndcg = self._shared_val_step(batch, batch_idx)
-        self.log('NDCG@10/val', ndcg, prog_bar=True, logger=True)
-        self.log('HR@10/val', hits, prog_bar=True, logger=True)
+        self.log('ndcg_val', ndcg, prog_bar=True, logger=True, sync_dist=True)
+        self.log('hr_val', hits, prog_bar=True, logger=True, sync_dist=True)
     
     def test_step(self, batch, batch_idx):
         """
         calculate Hit Rate and NDCG on test dataset
         """
         hits, ndcg = self._shared_val_step(batch, batch_idx)
-        self.log('NDCG@10/test', ndcg, prog_bar=True, logger=True)
-        self.log('HR@10/test', hits, prog_bar=True, logger=True)
+        self.log('ndcg_test', ndcg, prog_bar=True, logger=True, sync_dist=True)
+        self.log('hr_test', hits, prog_bar=True, logger=True, sync_dist=True)

@@ -19,7 +19,7 @@ class SequenceDataValidation(torch.utils.data.Dataset):
     - user_valid is appended with 100 random items that are not in user_trian after that 101 items are scored with model and logit 
         for the 0-th element(user_valid) should be somewhere in top 10 scores
     '''
-    def __init__(self, user_train, user_valid, usernum, itemnum, maxlen):
+    def __init__(self, user_train, user_valid, usernum, itemnum, maxlen, ndcg_samples=100):
         '''
         Input:
         - user_train: dict of user training sequence
@@ -27,6 +27,7 @@ class SequenceDataValidation(torch.utils.data.Dataset):
         - usernum - number of users in dataset
         - itemnum - number of items in dataset
         - maxlen - max len of sequence for truncation
+        - ndcg_samples - how many random items do we sample to calculate hit rate and ndcg
         Output:
         self.seq - maxlen sequnce for train
         self.valid - 101 len for validation
@@ -43,7 +44,7 @@ class SequenceDataValidation(torch.utils.data.Dataset):
             
         # making a validation sequence with one element from valid and the rest random
         # all elements that are in train plus padding zero
-        valid_seq = torch.zeros((len(users), 101), dtype=torch.int)
+        valid_seq = torch.zeros((len(users), ndcg_samples+1), dtype=torch.int)
         
         # make a matrix from train sequence (batch, maxlen)
         final_seq = torch.zeros((len(users), maxlen), dtype=torch.int)
@@ -56,7 +57,7 @@ class SequenceDataValidation(torch.utils.data.Dataset):
 
                 items_not_in_seq = np.array(list(set(range(1,itemnum+1)) - set(final_seq[ii].numpy().flatten()))) # random stuff not in final_seq
                 valid_seq[ii,0] = user_valid[_u][0] # get true next element from validation set
-                valid_seq[ii,1:] = torch.from_numpy(items_not_in_seq[np.random.randint(0, len(items_not_in_seq), 100)]) # fill the rest with random stuff
+                valid_seq[ii,1:] = torch.from_numpy(items_not_in_seq[np.random.randint(0, len(items_not_in_seq), ndcg_samples)]) # fill the rest with random stuff
                 pbar.update(1)
         
         self.seq = final_seq # store training seq
@@ -77,8 +78,8 @@ class SequenceDataTest(SequenceDataValidation):
     same as SequenceDataValidation class but uses one element from test_seq to make a test_seq
     alse adds up validation item to train sequence
     '''
-    def __init__(self, user_train, user_valid, user_test, usernum, itemnum, maxlen):
-        super().__init__(user_train, user_test, usernum, itemnum, maxlen)
+    def __init__(self, user_train, user_valid, user_test, usernum, itemnum, maxlen, ndcg_samples):
+        super().__init__(user_train, user_test, usernum, itemnum, maxlen, ndcg_samples)
         # now we need to shift self.seq one item back
         self.seq[:,:-1] = self.seq[:,1:]
         # this is an extra item that will be the last in training seq
