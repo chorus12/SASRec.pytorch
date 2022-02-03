@@ -5,6 +5,78 @@ author: bazman, 2021
 import torch
 import numpy as np
 from collections import defaultdict
+import random
+
+class SequenceDataValidationFullLength(torch.utils.data.Dataset):
+    '''
+    Dataset for validation - similar to SequenceDataValidation calss but puts all items except validation into validation sequence
+    So it can be used for true NDCG HIT rate metrics rather than sampling 100 items in validation sequence
+    train -> **valid** -> test
+    dataset to produce validation data
+    Input:
+    - user_train : known sequence of items for the user (train data)
+    - user_valid : one item that makes up a next selection after user_train sequence
+    - usernum : number of users in user_train/user_valid
+    - itemnum : number of items in user_train/user_valid
+    - maxlen : max length of sequence
+    Returns:
+    - user_train is the same
+    - user_valid is appended with all items except for vlidation item and after that all those items are scored with model and logit 
+        for the 0-th element(user_valid) should be somewhere in top 10 or 100 scores
+    '''
+    def __init__(self, user_train, user_valid, usernum, itemnum, maxlen):
+        '''
+        Input:
+        - user_train: dict of user training sequence
+        - user_valid: dict with one item for validation sequence
+        - usernum - number of users in dataset
+        - itemnum - number of items in dataset
+        - maxlen - max len of sequence for truncation
+        - ndcg_samples - how many random items do we sample to calculate hit rate and ndcg
+        Output:
+        self.seq - maxlen sequnce for train
+        self.valid - 101 len for validation
+        '''
+        from tqdm import tqdm
+        super(SequenceDataValidationFullLength, self).__init__()
+        
+        # make a list of users to validate on
+        # limit users max to 10000 or to whatever we have in case less than 10000
+        if usernum > 10_000:
+            users = random.sample(range(1, usernum + 1), 10_000)
+        else:
+            users = range(1, usernum + 1)
+            
+        # making a validation sequence with one element from valid and the rest random
+        # all elements that are in train plus padding zero
+        valid_seq = torch.zeros((len(users), itemnum), dtype=torch.int)
+        
+        # make a matrix from train sequence (batch, maxlen)
+        final_seq = torch.zeros((len(users), maxlen), dtype=torch.int)
+        
+        with tqdm(total=len(users)) as pbar:
+            for ii,_u in enumerate(users):
+                # truncate seq  to maxlen
+                idx = min(maxlen, len(user_train[_u]))
+                final_seq[ii, -idx:] = torch.as_tensor(user_train[_u][-idx:])
+                
+                all_items_set = set(range(1, itemnum+1)) # set of all possible items
+                validation_items_set = all_items_set - set(user_valid[_u])
+            
+                valid_seq[ii,0] = user_valid[_u][0] # get true next element from validation set
+                valid_seq[ii,1:] = torch.from_numpy(np.array(list(validation_items_set))) # all items except validation one
+                pbar.update(1)
+        
+        self.seq = final_seq # store training seq
+        self.valid = valid_seq # store validation seq
+        self.users = users # store validation users
+            
+    def __getitem__(self, index):
+        return self.seq[index], self.valid[index]
+
+    def __len__(self):
+        return len(self.seq)
+
 
 class SequenceDataValidation(torch.utils.data.Dataset):
     '''
@@ -32,7 +104,7 @@ class SequenceDataValidation(torch.utils.data.Dataset):
         self.seq - maxlen sequnce for train
         self.valid - 101 len for validation
         '''
-        from tqdm.notebook import tqdm
+        from tqdm import tqdm
         super(SequenceDataValidation, self).__init__()
         
         # make a list of users to validate on
@@ -110,7 +182,7 @@ class SequenceData(torch.utils.data.Dataset):
         1981,  450, 1175, 1576, 1787, 1425, 2698, 1916,  729, 3390, 2503,
         2751, 1481, 2422]
         '''
-        from tqdm.notebook import tqdm
+        from tqdm import tqdm
         super(SequenceData, self).__init__()
         self.usernum = usernum
         self.userids = np.array(list(user_seq.keys())) # store userids in a property

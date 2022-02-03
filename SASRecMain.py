@@ -57,7 +57,7 @@ parser.add_argument('--l2_pe_reg', default=0.1, type=float, help="Regularization
 
 
 parser.add_argument('--ndcg_samples', default=100, type=int, 
-                    help="How many random items to pick up in hit-rate and ndcg calculation, default 100")
+                    help="How many random items to pick up in hit-rate and ndcg calculation, default 100, if set to -1 then use all items on validation along with inference_only flag set to true")
 parser.add_argument('--top_k', default=10, type=int, 
                     help="How many items with high scores to pick for hit-rate and ndcg calculation, default 10")
 parser.add_argument('--opt', default='Adam', type=str, help="Oplimizer to use: Adam(default), AdmaW, FusedAdam(requires apex library)")
@@ -137,6 +137,7 @@ if __name__ == '__main__':
                          devices=args['devices'],
                          max_epochs=args['num_epochs'],
                          reload_dataloaders_every_n_epochs=1,
+                         accumulate_grad_batches=4,
                          val_check_interval=1.0,
                          callbacks=callbacks_list,
                          # log 4 times per epoch
@@ -149,37 +150,57 @@ if __name__ == '__main__':
     # no training but only validation metrics
     if args['inference_only']:
         model = SASRecEncoder.load_from_checkpoint(args['checkpoint_path'])
-        val_loader = torch.utils.data.DataLoader(dataset=DH.SequenceDataValidation(user_train, 
-                                                                           user_valid, 
-                                                                           usernum, 
-                                                                           itemnum, 
-                                                                           model.hparams.maxlen, 
-                                                                           model.hparams.ndcg_samples),
-                                                 batch_size=128, 
-                                                 shuffle=False,
-                                                 drop_last=False)        
+        model.hparams.top_k = args['top_k']
+        if args['ndcg_samples'] == -1 :
+            val_loader = torch.utils.data.DataLoader(dataset=DH.SequenceDataValidationFullLength(user_train, 
+                                                                                                 user_valid, 
+                                                                                                 usernum, 
+                                                                                                 itemnum, 
+                                                                                                 model.hparams.maxlen),
+                                                     batch_size=128, 
+                                                     shuffle=False,
+                                                     drop_last=False)
+        else:
+            val_loader = torch.utils.data.DataLoader(dataset=DH.SequenceDataValidation(user_train, 
+                                                                               user_valid, 
+                                                                               usernum, 
+                                                                               itemnum, 
+                                                                               model.hparams.maxlen, 
+                                                                               model.hparams.ndcg_samples),
+                                                     batch_size=128, 
+                                                     shuffle=False,
+                                                     drop_last=False)        
         trainer.validate(model, dataloaders=val_loader)
     else: # start training routine
-        
-        val_loader = torch.utils.data.DataLoader(dataset=DH.SequenceDataValidation(user_train, 
-                                                                                   user_valid, 
-                                                                                   usernum, 
-                                                                                   itemnum, 
-                                                                                   args['maxlen'], 
-                                                                                   args['ndcg_samples']),
-                                                 batch_size=args['batch_size'], 
-                                                 shuffle=True,
-                                                 drop_last=True)
-    
-        test_loader = torch.utils.data.DataLoader(dataset=DH.SequenceDataTest(user_train, 
-                                                                              user_valid, 
-                                                                              user_test, 
-                                                                              usernum, 
-                                                                              itemnum, 
-                                                                              args['maxlen'],
-                                                                              args['ndcg_samples']),
-                                                  batch_size=args['batch_size'], shuffle=False,
-                                                  drop_last=True)
+        if args['ndcg_samples'] == -1 :
+            val_loader = torch.utils.data.DataLoader(dataset=DH.SequenceDataValidationFullLength(user_train, 
+                                                                                                 user_valid, 
+                                                                                                 usernum, 
+                                                                                                 itemnum, 
+                                                                                                 args['maxlen']),
+                                                     batch_size=args['batch_size'], 
+                                                     shuffle=False,
+                                                     drop_last=False)
+        else:
+            val_loader = torch.utils.data.DataLoader(dataset=DH.SequenceDataValidation(user_train, 
+                                                                                       user_valid, 
+                                                                                       usernum, 
+                                                                                       itemnum, 
+                                                                                       args['maxlen'], 
+                                                                                       args['ndcg_samples']),
+                                                     batch_size=args['batch_size'], 
+                                                     shuffle=True,
+                                                     drop_last=True) 
+
+        # test_loader = torch.utils.data.DataLoader(dataset=DH.SequenceDataTest(user_train, 
+        #                                                                       user_valid, 
+        #                                                                       user_test, 
+        #                                                                       usernum, 
+        #                                                                       itemnum, 
+        #                                                                       args['maxlen'],
+        #                                                                       args['ndcg_samples']),
+        #                                           batch_size=args['batch_size'], shuffle=False,
+        #                                           drop_last=True)
 
         train_loader = torch.utils.data.DataLoader(dataset=DH.SequenceData(user_train, usernum, itemnum),
                                                    batch_size=args['batch_size'],
@@ -210,4 +231,4 @@ if __name__ == '__main__':
         torch.save(model.state_dict(), f"sasrec_{trainer.logger.version}.pt")
 
         # metrics on test dataset
-        trainer.test(model, test_loader)
+        # trainer.test(model, test_loader)
